@@ -43,6 +43,12 @@ import {
   klCompileSkillInput,
   klForget,
   klForgetInput,
+  hitlGet,
+  hitlGetInput,
+  hitlRequest,
+  hitlRequestInput,
+  hitlRespond,
+  hitlRespondInput,
   MCP_CONTRACT_VERSION,
 } from "@agenticmind/shared/lib/knowledge/mcp-tools"
 import { resolveRetrievalParams } from "@agenticmind/shared/lib/knowledge/retrieval-params"
@@ -205,6 +211,51 @@ const handler = createMcpHandler(
           return jsonContent(await runTenantScoped(extra, async (d) => klSignal(d, args)))
         } catch (error) {
           return errorContent(error instanceof Error ? error.message : "kl_signal failed")
+        }
+      },
+    )
+
+    registerKlTool(
+      server,
+      "hitl_request",
+      "Request human input",
+      "Ask a human for a decision and suspend the loop on it (human-in-the-loop as a tool call). Returns immediately with { id, status: 'pending' } — it does NOT block for the answer; the durable request survives a long wait and a killed process. The human answers via hitl_respond and a worker resumes the paused consumer. Requires the hitl:request scope.",
+      hitlRequestInput,
+      async (args, extra) => {
+        try {
+          return jsonContent(await runTenantScoped(extra, async (d) => hitlRequest(d, args)))
+        } catch (error) {
+          return errorContent(error instanceof Error ? error.message : "hitl_request failed")
+        }
+      },
+    )
+
+    registerKlTool(
+      server,
+      "hitl_respond",
+      "Respond to a human-input request",
+      "Deliver a human's answer to a pending hitl_request by id, marking it answered so the paused loop can resume. Requires the elevated hitl:respond scope (a human-facing token, not the requesting agent's own).",
+      hitlRespondInput,
+      async (args, extra) => {
+        try {
+          return jsonContent(await runTenantScoped(extra, async (d) => hitlRespond(d, args)))
+        } catch (error) {
+          return errorContent(error instanceof Error ? error.message : "hitl_respond failed")
+        }
+      },
+    )
+
+    registerKlTool(
+      server,
+      "hitl_get",
+      "Poll a human-input request",
+      "Poll your own pending hitl_request by id to read the human's answer and resume. Returns { id, status, response, expiresAt }; status is 'pending' until answered, then 'answered' (or 'expired'). Authorized to the requester only. Requires the hitl:request scope.",
+      hitlGetInput,
+      async (args, extra) => {
+        try {
+          return jsonContent(await runTenantScoped(extra, async (d) => hitlGet(d, args)))
+        } catch (error) {
+          return errorContent(error instanceof Error ? error.message : "hitl_get failed")
         }
       },
     )

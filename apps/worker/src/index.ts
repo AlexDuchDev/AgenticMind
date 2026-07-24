@@ -6,6 +6,7 @@
  */
 
 import { startAssuranceDriftScheduler } from "@/jobs/assurance-drift/worker"
+import { startHitlExpiryScheduler } from "@/jobs/hitl-expiry/worker"
 import { startKnowledgeFeedbackScheduler } from "@/jobs/knowledge-feedback/worker"
 import { initTracing } from "@/tracing"
 
@@ -14,16 +15,18 @@ initTracing()
 
 const scheduler = startKnowledgeFeedbackScheduler()
 const driftScheduler = startAssuranceDriftScheduler()
+const hitlExpiryScheduler = startHitlExpiryScheduler()
 
 const shutdown = (): void => {
   console.log(`[WORKER] ${new Date().toISOString()}: shutting down…`)
   scheduler.stop()
   driftScheduler.stop()
+  hitlExpiryScheduler.stop()
   process.exit(0)
 }
 process.on("SIGINT", shutdown)
 process.on("SIGTERM", shutdown)
 
 console.log(
-  `[WORKER] ${new Date().toISOString()}: AgenticMind worker ready (Postgres-scheduled feedback + assurance-drift sweeps).`,
+  `[WORKER] ${new Date().toISOString()}: AgenticMind worker ready (Postgres-scheduled feedback + assurance-drift + hitl-expiry sweeps).`,
 )

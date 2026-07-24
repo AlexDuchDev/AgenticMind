@@ -3,6 +3,7 @@
 // (There are no multi-route assistant tables — the MCP path calls ask() directly.)
 
 import * as AssuranceRuns from "@agenticmind/shared/database/schema/assurance/runs"
+import * as HitlRequests from "@agenticmind/shared/database/schema/hitl/requests"
 import * as KnowledgeAnswerCache from "@agenticmind/shared/database/schema/knowledge/answer-cache"
 import * as KnowledgeAskClusterMembers from "@agenticmind/shared/database/schema/knowledge/ask-cluster-members"
 import * as KnowledgeAskClusters from "@agenticmind/shared/database/schema/knowledge/ask-clusters"
@@ -38,6 +39,7 @@ export * from "@agenticmind/shared/database/schema/knowledge/mcp-tokens"
 export * from "@agenticmind/shared/database/schema/knowledge/skills"
 export * from "@agenticmind/shared/database/schema/knowledge/tool-audit-events"
 export * from "@agenticmind/shared/database/schema/assurance/runs"
+export * from "@agenticmind/shared/database/schema/hitl/requests"
 
 export const schema = {
   ...Users,
@@ -57,4 +59,5 @@ export const schema = {
   ...KnowledgeSkills,
   ...KnowledgeToolAuditEvents,
   ...AssuranceRuns,
+  ...HitlRequests,
 }
