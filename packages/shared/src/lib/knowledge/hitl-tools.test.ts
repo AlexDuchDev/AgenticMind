@@ -12,7 +12,6 @@
  */
 // oxlint-disable-next-line import/no-unassigned-import -- side-effect: SKIP_VALIDATION before settings load
 import "@agenticmind/shared/lib/knowledge/_test-env"
-
 import { ok } from "neverthrow"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -57,6 +56,15 @@ describe("hitl_request", () => {
     ).rejects.toThrow("no agent identity")
   })
 
+  it("rejects a reserved 'internal:' kind (an agent cannot forge an internal request)", async () => {
+    await expect(
+      hitlRequest(
+        { scopes: ["hitl:request"], actorUuid: "agent-1", tx },
+        { question: "Approve?", kind: "internal:remediation_approval" },
+      ),
+    ).rejects.toThrow("reserved")
+  })
+
   it("creates a pending request and echoes the idempotency key", async () => {
     mockCreate.mockReturnValue(ok("row-1") as never)
 
@@ -73,7 +81,10 @@ describe("hitl_request", () => {
 describe("hitl_respond", () => {
   it("refuses a token without the elevated hitl:respond scope (an agent cannot answer itself)", async () => {
     await expect(
-      hitlRespond({ scopes: ["hitl:request"], actorUuid: "agent-1", tx }, { id: "row-1", answer: "yes" }),
+      hitlRespond(
+        { scopes: ["hitl:request"], actorUuid: "agent-1", tx },
+        { id: "row-1", answer: "yes" },
+      ),
     ).rejects.toThrow("hitl:respond")
   })
 
@@ -81,7 +92,10 @@ describe("hitl_respond", () => {
     mockAnswer.mockReturnValue(ok([]) as never)
 
     await expect(
-      hitlRespond({ scopes: ["hitl:respond"], actorUuid: "human-1", tx }, { id: "row-1", answer: "yes" }),
+      hitlRespond(
+        { scopes: ["hitl:respond"], actorUuid: "human-1", tx },
+        { id: "row-1", answer: "yes" },
+      ),
     ).rejects.toThrow("not found or no longer pending")
   })
 
@@ -111,15 +125,18 @@ describe("hitl_get", () => {
   }
 
   it("refuses a poll without the hitl:request scope", async () => {
-    await expect(hitlGet({ scopes: [], actorUuid: "agent-1", tx }, { id: "row-1" })).rejects.toThrow(
-      "hitl:request",
-    )
+    await expect(
+      hitlGet({ scopes: [], actorUuid: "agent-1", tx }, { id: "row-1" }),
+    ).rejects.toThrow("hitl:request")
   })
 
   it("returns the answer to the asking agent", async () => {
     mockGet.mockReturnValue(ok(row({})) as never)
 
-    const res = await hitlGet({ scopes: ["hitl:request"], actorUuid: "agent-1", tx }, { id: "row-1" })
+    const res = await hitlGet(
+      { scopes: ["hitl:request"], actorUuid: "agent-1", tx },
+      { id: "row-1" },
+    )
 
     expect(res).toEqual({
       id: "row-1",
