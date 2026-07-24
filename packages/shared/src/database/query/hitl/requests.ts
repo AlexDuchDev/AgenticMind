@@ -104,3 +104,49 @@ export const expireStaleHitlRequests = (props: { tx: Transaction; limit: number 
     mapDatabaseError,
   )
 }
+
+/**
+ * Select answered rows of a `kind` for an internal worker to resume. The worker runs under a
+ * transaction-scoped advisory lock (single-writer per sweep), so it selects + resumes + settles in
+ * ONE transaction — no claim/lease is needed, and a crashed sweep rolls back atomically, leaving the
+ * rows `answered` to be re-processed next tick. (External MCP agents do not use this path — they poll
+ * hitl_get and resume themselves.)
+ */
+export const selectAnsweredHitlRequests = (props: {
+  tx: Transaction
+  kind: string
+  limit: number
+}) =>
+  ResultAsync.fromPromise(
+    props.tx
+      .select({
+        id: hitlRequests.id,
+        payload: hitlRequests.payload,
+        response: hitlRequests.response,
+        answeredBy: hitlRequests.answeredBy,
+      })
+      .from(hitlRequests)
+      .where(and(eq(hitlRequests.status, "answered"), eq(hitlRequests.kind, props.kind)))
+      .orderBy(hitlRequests.createdAt)
+      .limit(props.limit),
+    mapDatabaseError,
+  )
+
+/**
+ * Settle a resumed request to its terminal state — CAS answered→resumed|failed. Called in the same
+ * sweep transaction as the resume, so the ledger outcome and this state flip commit atomically (a
+ * crash before commit leaves the row `answered`, never half-applied).
+ */
+export const settleHitlRequest = (props: {
+  tx: Transaction
+  id: string
+  status: "resumed" | "failed"
+}) =>
+  ResultAsync.fromPromise(
+    props.tx
+      .update(hitlRequests)
+      .set({ status: props.status })
+      .where(and(eq(hitlRequests.id, props.id), eq(hitlRequests.status, "answered")))
+      .returning({ id: hitlRequests.id }),
+    mapDatabaseError,
+  )

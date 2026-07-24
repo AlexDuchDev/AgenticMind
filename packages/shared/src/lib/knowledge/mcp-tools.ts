@@ -756,6 +756,11 @@ export const hitlRequest = async (
   if (actorUuid === null) {
     throw new Error("hitl_request: no agent identity on the token")
   }
+  // `internal:` kinds are reserved for internal worker consumers (e.g. remediation approvals); an
+  // agent must not be able to forge one via this tool and have the resume sweep pick it up.
+  if (args.kind !== undefined && args.kind.startsWith("internal:")) {
+    throw new Error("hitl_request: 'internal:' kinds are reserved for internal consumers")
+  }
   await enforceGuards(deps, "hitl_request", args.question)
   const requestId = args.requestId ?? randomUUID()
   const expiresAt =

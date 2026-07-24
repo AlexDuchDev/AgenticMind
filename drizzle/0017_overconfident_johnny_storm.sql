@@ -1,0 +1,2 @@
+ALTER TABLE "hitl_requests" DROP CONSTRAINT "hitl_requests_status_check";--> statement-breakpoint
+ALTER TABLE "hitl_requests" ADD CONSTRAINT "hitl_requests_status_check" CHECK ("hitl_requests"."status" IN ('pending', 'answered', 'resumed', 'failed', 'expired'));

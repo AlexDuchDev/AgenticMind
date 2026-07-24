@@ -37,9 +37,13 @@ const hitlRequests = pgTable(
      * a retry with the same key returns the existing row; two DIFFERENT agents may reuse a key
      * (`call_1`) without shadowing each other. */
     requestId: text("request_id").notNull(),
-    /** What kind of human decision this is: "approval", "clarification", "remediation_approval", … */
+    /** What kind of human decision this is: "approval", "clarification", "internal:remediation_approval", … */
     kind: text("kind").notNull(),
-    /** Lifecycle: pending → answered (a human replied) | pending → expired (deadline passed). */
+    /**
+     * Lifecycle: pending → answered (a human replied) → resumed | failed (an INTERNAL worker
+     * consumer applied the answer, atomically under an advisory lock) | pending → expired (deadline).
+     * EXTERNAL MCP agents skip resumed/failed — they poll hitl_get and resume themselves.
+     */
     status: text("status").notNull().default("pending"),
     /** The question/context shown to the human. */
     payload: jsonb("payload")
@@ -64,7 +68,10 @@ const hitlRequests = pgTable(
     uniqueIndex("hitl_requests_requester_request_id_uidx").on(table.requestedBy, table.requestId),
     // Serves the expiry sweep predicate (status = 'pending' AND expires_at < now()).
     index("hitl_requests_status_expiry_idx").on(table.status, table.expiresAt),
-    check("hitl_requests_status_check", sql`${table.status} IN ('pending', 'answered', 'expired')`),
+    check(
+      "hitl_requests_status_check",
+      sql`${table.status} IN ('pending', 'answered', 'resumed', 'failed', 'expired')`,
+    ),
   ],
 )
 
