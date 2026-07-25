@@ -10,7 +10,9 @@
  * in-memory in @agenticmind/assurance (no DB table), so the durable record here is the hitl_request
  * lifecycle (answered → resumed|failed) plus the logged outcome, not the applied ledger entry.
  */
+import type { CoreReport } from "@agenticmind/assurance/gap/ingest"
 import type { AssuranceNotifier } from "@agenticmind/assurance/notify/channel"
+import type { RemediationJudge } from "@agenticmind/assurance/remediate/judge"
 import type { AppliedEdit, RemediationLedgerEntry } from "@agenticmind/assurance/remediate/ledger"
 import type { Transaction } from "@agenticmind/shared/database/client"
 
@@ -20,7 +22,10 @@ import {
   applyRemediation,
   approveRemediation,
   declineRemediation,
+  openRemediation,
 } from "@agenticmind/assurance/remediate/apply"
+import { gateProposal } from "@agenticmind/assurance/remediate/judge"
+import { triageFindings } from "@agenticmind/assurance/remediate/triage"
 import { createHitlRequest } from "@agenticmind/shared/database/query/hitl/requests"
 
 /**
@@ -41,9 +46,10 @@ type RemediationPayload = {
  * concrete edits (the ledger keeps `edits` empty until applied, so we carry them ourselves) and
  * notifies a human with a payload-free approval request. Idempotent on the entry id.
  *
- * DORMANT: this is the documented suspend entry point for L3 orchestration — no production producer
- * calls it yet, so the resume sweep is idle until one does. The full engine (request→answer→resume)
- * is exercised by tests; wiring a live producer is the next step, not this change.
+ * Called by `proposeRemediations` (the L3 producer, wired into the assurance-drift sweep): on a fed
+ * AAL Core report with attack findings it triages → gates → suspends here. The scheduled sweep feeds
+ * an EMPTY report (no attacks ⇒ no requests), so this activates only when a deployment feeds a real
+ * `aal scan` report — the worker never runs the scan itself (FR-12.2).
  */
 export const requestRemediationApproval = async (
   props: {
@@ -72,9 +78,26 @@ export const requestRemediationApproval = async (
   if (created.isErr()) {
     throw new Error(`requestRemediationApproval: ${created.error.message}`)
   }
-  // Payload-free notification (ids only). A notifier failure must not fail the request — it is durable.
+  // Give the human enough to APPROVE informedly — the judge's rationale + which structural surfaces
+  // change (op + path). These are payload-free DESCRIPTIONS (not raw evidence/secrets — they already
+  // go into the judge prompt), so enriching the base approval notification is safe and closes the
+  // blind-rubber-stamp gap. A notifier failure must not fail the request — it is durable.
+  const base = formatApprovalRequest(props.entry)
+  const editList = props.edits.map((edit) => `${edit.op} ${edit.path}`).join(", ")
+  const rationale = props.entry.verdict?.rationale ?? ""
   try {
-    await notify(formatApprovalRequest(props.entry))
+    await notify({
+      ...base,
+      body:
+        rationale === ""
+          ? `${base.body} Edits: ${editList}.`
+          : `${base.body} Judge: ${rationale}. Edits: ${editList}.`,
+      context: {
+        ...base.context,
+        edits: editList,
+        ...(rationale === "" ? {} : { rationale }),
+      },
+    })
   } catch (error: unknown) {
     console.error("[HITL_REMEDIATION] notifier failed:", error)
   }
@@ -146,4 +169,50 @@ export const resumeRemediation = (
   return {
     outcome: `approved by hitl:${approver}; recorded ledger apply of ${edits.length} edit(s)`,
   }
+}
+
+/** The system principal that ASKS for an auto-proposed remediation — never a human, so the
+ * `ne(requestedBy, answeredBy)` self-answer belt always holds against the human who approves. */
+export const REMEDIATION_REQUESTER = "system:assurance-remediation"
+
+/**
+ * L3 producer — auto-PROPOSE from a fed AAL Core report, human-APPROVE (STANDARD Layer 5, Loop
+ * License). Triage the report's failed-attack classes into structural fix proposals, gate each
+ * through the Cycle-of-Trust guard + the fail-closed judge, and — for a `supported` proposal only —
+ * suspend it on a durable human approval (requestRemediationApproval). Nothing applies without a
+ * human; the worker never runs the scan itself (FR-12.2), so the report is an injected input (an
+ * empty report yields zero proposals and zero judge calls — the cheap scheduled default).
+ */
+export const proposeRemediations = async (
+  props: {
+    tx: Transaction
+    report: CoreReport
+    judge: RemediationJudge
+    requestedBy?: string
+  },
+  notify: AssuranceNotifier = consoleNotifier,
+): Promise<{ proposed: number; requested: number }> => {
+  const proposals = triageFindings(props.report)
+  const requestedBy = props.requestedBy ?? REMEDIATION_REQUESTER
+  const at = new Date().toISOString()
+  let requested = 0
+  for (const proposal of proposals) {
+    const gate = await gateProposal(proposal, props.judge)
+    if (gate.decision !== "pending_approval") {
+      // guard_rejected / judge_rejected — terminal (fail-closed); nothing to put to a human.
+      continue
+    }
+    const entry = openRemediation(proposal, gate, at)
+    // The ledger keeps `edits` empty until applied; carry the proposal's structural edits (path/op)
+    // so the resume can re-check + apply them. before/after are unmaterialised until an external write.
+    const edits: AppliedEdit[] = proposal.edits.map((edit) => {
+      return { path: edit.path, op: edit.op, before: null, after: null }
+    })
+    // Idempotent on requestId (= entry.id = "rem:fix:<class>") per requester — so a persistent finding
+    // is put to a human ONCE per requester, not re-nagged every sweep. Deliberate: once a human has
+    // answered (approved OR declined), the same class-finding does not resurrect a request.
+    await requestRemediationApproval({ tx: props.tx, entry, edits, requestedBy }, notify)
+    requested += 1
+  }
+  return { proposed: proposals.length, requested }
 }

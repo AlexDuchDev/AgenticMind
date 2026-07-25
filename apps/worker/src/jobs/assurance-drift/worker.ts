@@ -8,9 +8,11 @@
 import type { AssuranceNotifier } from "@agenticmind/assurance"
 
 import { consoleNotifier, makeTelegramNotifier } from "@agenticmind/assurance"
+import { makeEngineJudge } from "@agenticmind/assurance/remediate/engine-judge"
 import { sql } from "drizzle-orm"
 
 import { runAssuranceDriftSweep } from "@/jobs/assurance-drift/handler"
+import { proposeRemediations } from "@/jobs/hitl-resume/remediation"
 import { db } from "@/lib/database"
 
 /** Fixed key identifying the assurance-drift advisory lock (distinct from the feedback sweep). */
@@ -60,7 +62,24 @@ const runGuarded = async (): Promise<void> => {
       )
       return
     }
-    await runAssuranceDriftSweep(tx, notifier)
+    await runAssuranceDriftSweep(tx, notifier, {
+      // L3 auto-remediation: propose durable, human-gated fixes for attack findings in the fed
+      // report. The scheduled report is EMPTY (no attacks ⇒ no proposals, no judge/LLM calls — the
+      // active v1 path). ⚠️ On a FED report the judge makes LLM calls INSIDE this advisory-lock tx;
+      // before activating the fed path in production, move proposeRemediations out of the drift lock
+      // (or commit the drift run first) so a long LLM wait can't roll back the recorded run.
+      onCoreReport: async (report, txn) => {
+        const result = await proposeRemediations(
+          { tx: txn, report, judge: makeEngineJudge() },
+          notifier,
+        )
+        if (result.requested > 0) {
+          console.log(
+            `[ASSURANCE_DRIFT] auto-proposed ${result.requested}/${result.proposed} remediation(s) awaiting human approval`,
+          )
+        }
+      },
+    })
   })
 }
 
