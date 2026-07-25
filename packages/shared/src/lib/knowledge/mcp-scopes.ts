@@ -15,6 +15,8 @@ export const KNOWLEDGE_SCOPES = [
   "memory:read",
   "memory:write",
   "memory:admin",
+  "hitl:request",
+  "hitl:respond",
 ] as const
 
 export type KnowledgeScope = (typeof KNOWLEDGE_SCOPES)[number]
@@ -43,4 +45,7 @@ export const TOOL_SCOPE: Record<string, KnowledgeScope> = {
   mem_recall: "memory:read",
   mem_write: "memory:write",
   mem_forget: "memory:admin",
+  hitl_request: "hitl:request",
+  hitl_respond: "hitl:respond",
+  hitl_get: "hitl:request",
 }

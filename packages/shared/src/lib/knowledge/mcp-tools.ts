@@ -16,6 +16,11 @@ import type { RetrievalParams } from "@agenticmind/shared/lib/knowledge/retrieva
 import type { CallerContext } from "@agenticmind/shared/lib/knowledge/synth"
 import type { CorpusChunk } from "@agenticmind/shared/lib/skill/compile-live"
 
+import {
+  answerHitlRequest,
+  createHitlRequest,
+  getHitlRequest,
+} from "@agenticmind/shared/database/query/hitl/requests"
 import { recordEvent } from "@agenticmind/shared/database/query/knowledge/ask-feedback"
 import {
   assertBelief,
@@ -50,7 +55,7 @@ import { createGraphContextProvider } from "@agenticmind/shared/lib/knowledge/qa
 import { LIFECYCLES } from "@agenticmind/shared/lib/knowledge/source-trust"
 import { compileSkillLive } from "@agenticmind/shared/lib/skill/compile-live"
 import { aiSettings } from "@agenticmind/shared/settings/ai-settings"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import * as z from "zod"
 
 /** Per-request dependencies for the knowledge MCP tools. */
@@ -719,6 +724,138 @@ export const klForget = async (deps: McpToolDeps, args: z.infer<typeof klForgetI
   return { id: args.id, ...res.value }
 }
 
+export const hitlRequestInput = z.object({
+  /** The question / decision to put to a human. Free text — guarded for injection + length. */
+  question: z.string().min(1).max(2000),
+  /** What kind of decision this is (drives routing/rendering). Defaults to "clarification". */
+  kind: z.string().min(1).max(64).optional(),
+  /** Idempotency key (e.g. the originating tool-call id): a retry with the same key returns the
+   * existing pending request instead of creating a duplicate. Generated if omitted. */
+  requestId: z.string().min(1).max(200).optional(),
+  /** Structured context stored with the question (e.g. the proposed action to approve). */
+  context: z.record(z.string(), z.unknown()).optional(),
+  /** Optional deadline in seconds; a pending request past it is expired and escalated. */
+  expiresInSeconds: z.number().int().positive().max(2_592_000).optional(),
+})
+
+/**
+ * Hitl_request — the agent EMITS a request for a human decision and the loop SUSPENDS on it
+ * (12-Factor F7 / STANDARD Layer 5 durable-HITL invariant). Returns IMMEDIATELY with
+ * `{ id, status: "pending" }`: it does NOT block for the answer (the MCP call is capped at 60s and
+ * a human may take days). The durable row survives a killed process; the human later answers via
+ * hitl_respond, and this agent resumes by polling hitl_get for the answer. Requires the hitl:request scope.
+ */
+export const hitlRequest = async (
+  deps: McpToolDeps,
+  args: z.infer<typeof hitlRequestInput>,
+): Promise<{ id: string; requestId: string; status: "pending" }> => {
+  if (!hasScope(deps.scopes, "hitl:request")) {
+    throw new Error("hitl_request: missing required scope 'hitl:request'")
+  }
+  const actorUuid = deps.actorUuid ?? null
+  if (actorUuid === null) {
+    throw new Error("hitl_request: no agent identity on the token")
+  }
+  await enforceGuards(deps, "hitl_request", args.question)
+  const requestId = args.requestId ?? randomUUID()
+  const expiresAt =
+    args.expiresInSeconds !== undefined
+      ? new Date(Date.now() + args.expiresInSeconds * 1000)
+      : undefined
+  const res = await createHitlRequest({
+    tx: deps.tx,
+    request: {
+      requestId,
+      kind: args.kind ?? "clarification",
+      requestedBy: actorUuid,
+      payload: { question: args.question, context: args.context ?? {} },
+      expiresAt,
+    },
+  })
+  if (res.isErr()) {
+    throw new Error(`hitl_request: ${res.error.message}`)
+  }
+  return { id: res.value, requestId, status: "pending" }
+}
+
+export const hitlRespondInput = z.object({
+  /** The pending request id returned by hitl_request. */
+  id: z.uuid(),
+  /** The human's answer / decision, delivered back to the paused loop. */
+  answer: z.string().min(1).max(4000),
+})
+
+/**
+ * Hitl_respond — a HUMAN delivers the answer to a pending hitl_request, flipping it
+ * pending→answered so a worker can resume the paused loop. Gated on the elevated hitl:respond
+ * scope, held by human-facing tokens only — an agent's own token must NOT carry it, or an agent
+ * could answer its own request and defeat the human gate (Cycle of Trust).
+ */
+export const hitlRespond = async (
+  deps: McpToolDeps,
+  args: z.infer<typeof hitlRespondInput>,
+): Promise<{ id: string; status: "answered" }> => {
+  if (!hasScope(deps.scopes, "hitl:respond")) {
+    throw new Error("hitl_respond: missing required scope 'hitl:respond'")
+  }
+  const answeredBy = deps.actorUuid ?? null
+  if (answeredBy === null) {
+    throw new Error("hitl_respond: no principal identity on the token")
+  }
+  const res = await answerHitlRequest({
+    tx: deps.tx,
+    id: args.id,
+    answeredBy,
+    response: { answer: args.answer },
+  })
+  if (res.isErr()) {
+    throw new Error(`hitl_respond: ${res.error.message}`)
+  }
+  if (res.value.length === 0) {
+    throw new Error("hitl_respond: request not found or no longer pending")
+  }
+  return { id: args.id, status: "answered" }
+}
+
+export const hitlGetInput = z.object({
+  /** The pending request id returned by hitl_request. */
+  id: z.uuid(),
+})
+
+/**
+ * Hitl_get — the asking agent polls its OWN request to read the human's answer and resume (12-Factor
+ * F6 pause/resume: the loop suspended on hitl_request continues once this returns status "answered").
+ * Authorized to the requester only — a request created by a different actor reads as not-found.
+ * Requires the hitl:request scope.
+ */
+export const hitlGet = async (
+  deps: McpToolDeps,
+  args: z.infer<typeof hitlGetInput>,
+): Promise<{ id: string; status: string; response: unknown; expiresAt: string | null }> => {
+  if (!hasScope(deps.scopes, "hitl:request")) {
+    throw new Error("hitl_get: missing required scope 'hitl:request'")
+  }
+  const actorUuid = deps.actorUuid ?? null
+  if (actorUuid === null) {
+    throw new Error("hitl_get: no agent identity on the token")
+  }
+  const res = await getHitlRequest({ tx: deps.tx, id: args.id })
+  if (res.isErr()) {
+    throw new Error(`hitl_get: ${res.error.message}`)
+  }
+  const row = res.value
+  if (row === null || row.requestedBy !== actorUuid) {
+    // Don't reveal another actor's request, even by its existence.
+    throw new Error("hitl_get: request not found")
+  }
+  return {
+    id: row.id,
+    status: row.status,
+    response: row.response,
+    expiresAt: row.expiresAt === null ? null : row.expiresAt.toISOString(),
+  }
+}
+
 /**
  * SemVer of the public MCP tool contract (names + input schemas + scopes), as
  * surfaced in `serverInfo.version`. Bump MINOR for additive changes (a new tool,
@@ -726,7 +863,7 @@ export const klForget = async (deps: McpToolDeps, args: z.infer<typeof klForgetI
  * a newly-required field). The contract snapshot test (mcp-contract.test.ts)
  * guards against silent drift. See CONTRACT.md for the policy.
  */
-export const MCP_CONTRACT_VERSION = "1.9.0"
+export const MCP_CONTRACT_VERSION = "1.10.0"
 
 /** Tool metadata (name + description + input schema) for MCP registration. */
 export const KNOWLEDGE_MCP_TOOLS = [
@@ -794,5 +931,23 @@ export const KNOWLEDGE_MCP_TOOLS = [
     description:
       "Forget (permanently delete) a single material by its UUID and everything derived from it — chunks, embeddings, fact cards, and graph mentions. The inverse of kl_ingest, for retraction or right-to-erasure. Requires the elevated knowledge:admin scope.",
     inputSchema: klForgetInput,
+  },
+  {
+    name: "hitl_request",
+    description:
+      "Ask a human for a decision and SUSPEND the loop on it — human-in-the-loop modeled as a tool call the agent emits (12-Factor F7). Returns immediately with { id, status: 'pending' }; it does NOT block for the answer, and the durable request survives both a long wait and a killed process. The human later answers via hitl_respond and a worker resumes the paused consumer. Pass requestId for idempotency and expiresInSeconds for a deadline (a stale request is expired and escalated). Requires the hitl:request scope.",
+    inputSchema: hitlRequestInput,
+  },
+  {
+    name: "hitl_respond",
+    description:
+      "Deliver a human's answer to a pending hitl_request by id, flipping it to answered so the paused loop can resume. Requires the elevated hitl:respond scope — a human-facing token, never the requesting agent's own token (or an agent could answer itself).",
+    inputSchema: hitlRespondInput,
+  },
+  {
+    name: "hitl_get",
+    description:
+      "Poll your own pending hitl_request by id to read the human's answer and resume (12-Factor F6). Returns { id, status, response, expiresAt }: status is 'pending' until a human answers via hitl_respond, then 'answered' with the response (or 'expired' if the deadline passed). Authorized to the requester only. Requires the hitl:request scope.",
+    inputSchema: hitlGetInput,
   },
 ] as const

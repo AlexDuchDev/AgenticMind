@@ -37,6 +37,12 @@ const CONTRACT: Record<string, { fields: string[]; required: string[] }> = {
     required: ["object", "predicate", "subject"],
   },
   mem_forget: { fields: ["id"], required: ["id"] },
+  hitl_request: {
+    fields: ["context", "expiresInSeconds", "kind", "question", "requestId"],
+    required: ["question"],
+  },
+  hitl_respond: { fields: ["answer", "id"], required: ["answer", "id"] },
+  hitl_get: { fields: ["id"], required: ["id"] },
 }
 
 const shapeOf = (schema: unknown): { fields: string[]; required: string[] } => {
