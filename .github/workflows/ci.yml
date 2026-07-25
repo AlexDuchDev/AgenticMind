@@ -24,7 +24,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Initialize DB extensions
         run: docker exec -i ${{ job.services.postgres.id }} psql -U postgres -d agenticmind < scripts/db-init/00-extensions.sql
       - uses: oven-sh/setup-bun@v2
@@ -56,8 +56,8 @@ jobs:
     name: check (npm / Node)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - uses: oven-sh/setup-bun@v2
