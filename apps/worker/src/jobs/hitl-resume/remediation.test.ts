@@ -6,10 +6,18 @@
  *
  * Cross-runner mocks (`mock`-prefixed vi.fn + delegating closures) so it runs under bun test + vitest.
  */
+import type { CoreReport } from "@agenticmind/assurance/gap/ingest"
+import type { RemediationJudge } from "@agenticmind/assurance/remediate/judge"
+
 import { ok } from "neverthrow"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { REMEDIATION_KIND, requestRemediationApproval, resumeRemediation } from "./remediation"
+import {
+  proposeRemediations,
+  REMEDIATION_KIND,
+  requestRemediationApproval,
+  resumeRemediation,
+} from "./remediation"
 
 const mockCreate = vi.fn()
 
@@ -104,5 +112,70 @@ describe("requestRemediationApproval", () => {
         requestedBy: "engine",
       }),
     ).rejects.toThrow("not 'pending_approval'")
+  })
+})
+
+describe("proposeRemediations", () => {
+  const attackReport = {
+    attacks: [
+      {
+        attackId: "a1",
+        attackClass: "prompt-injection",
+        outcome: "succeeded",
+        refuseButFire: false,
+      },
+    ],
+    findings: [],
+    flows: [],
+  } as unknown as CoreReport
+  const emptyReport = { attacks: [], findings: [], flows: [] } as unknown as CoreReport
+  const supportedJudge: RemediationJudge = async () => {
+    return { verdict: "supported", rationale: "valid structural fix" }
+  }
+  const unsupportedJudge: RemediationJudge = async () => {
+    return { verdict: "unsupported", rationale: "off target" }
+  }
+
+  beforeEach(() => {
+    mockCreate.mockReset()
+    mockCreate.mockReturnValue(ok("hitl-1"))
+  })
+
+  it("suspends a judge-supported proposal on a durable approval request", async () => {
+    const notify = vi.fn()
+
+    const res = await proposeRemediations(
+      { tx: {} as never, report: attackReport, judge: supportedJudge },
+      notify,
+    )
+
+    expect(res).toEqual({ proposed: 1, requested: 1 })
+    expect(mockCreate).toHaveBeenCalledOnce()
+    expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({ request: { kind: REMEDIATION_KIND } })
+    expect(notify).toHaveBeenCalledOnce()
+  })
+
+  it("requests nothing when the judge does not support the fix (fail-closed)", async () => {
+    const notify = vi.fn()
+
+    const res = await proposeRemediations(
+      { tx: {} as never, report: attackReport, judge: unsupportedJudge },
+      notify,
+    )
+
+    expect(res).toEqual({ proposed: 1, requested: 0 })
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it("is a no-op on an empty report — no proposals, no judge calls", async () => {
+    const judge = vi.fn()
+
+    const res = await proposeRemediations(
+      { tx: {} as never, report: emptyReport, judge: judge as never },
+      vi.fn(),
+    )
+
+    expect(res).toEqual({ proposed: 0, requested: 0 })
+    expect(judge).not.toHaveBeenCalled()
   })
 })

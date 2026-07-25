@@ -46,9 +46,17 @@ const emptyCoreReport = (target: string): CoreReport => {
   return report.value
 }
 
+type DriftSweepOptions = {
+  /** A fed AAL Core report to score + remediate; defaults to empty (native-evidence drift only). */
+  coreReport?: CoreReport
+  /** Hook run on the (fed) Core report after the run is recorded — the L3 auto-remediation seam. */
+  onCoreReport?: (report: CoreReport, tx: Transaction) => Promise<void>
+}
+
 export const runAssuranceDriftSweep = async (
   db: Transaction,
   notify: AssuranceNotifier = consoleNotifier,
+  options: DriftSweepOptions = {},
 ): Promise<void> =>
   withSpan("assurance.drift_sweep", SpanKind.CHAIN, async (span) => {
     const at = new Date().toISOString()
@@ -66,7 +74,8 @@ export const runAssuranceDriftSweep = async (
       return
     }
 
-    const bundle = assembleBundle(catalog.value, emptyCoreReport(TARGET), collected.value)
+    const coreReport = options.coreReport ?? emptyCoreReport(TARGET)
+    const bundle = assembleBundle(catalog.value, coreReport, collected.value)
     const snapshot = snapshotBundle(bundle)
 
     const prior = await latestAssuranceRun({ tx: db, target: TARGET })
@@ -89,6 +98,17 @@ export const runAssuranceDriftSweep = async (
 
     span.setAttribute("assurance.controls", snapshot.length)
     span.setAttribute("assurance.regressions", report?.regressions.length ?? 0)
+
+    // L3 auto-remediation seam: propose durable, human-gated fixes for any attack findings in the fed
+    // report (an empty report is a no-op). A remediation failure must NOT fail the drift sweep.
+    if (options.onCoreReport !== undefined) {
+      try {
+        await options.onCoreReport(coreReport, db)
+      } catch (error: unknown) {
+        span.setAttribute("assurance.remediation_failed", true)
+        console.error("[ASSURANCE_DRIFT] remediation hook failed:", error)
+      }
+    }
 
     if (alert === null) {
       console.log(
