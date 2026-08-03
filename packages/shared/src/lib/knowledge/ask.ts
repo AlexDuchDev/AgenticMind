@@ -103,6 +103,7 @@ import {
 import {
   Attr,
   recordChildSpan,
+  setAgentAttributes,
   setInput,
   setOutput,
   SpanKind,
@@ -741,6 +742,9 @@ const tierBFaithfulness = async (
  * backend (Phoenix / Langfuse / LangSmith). */
 const runAskTraced = async (props: AskProps): Promise<Answer> =>
   withSpan("knowledge.ask", SpanKind.CHAIN, async (span) => {
+    // Root agent span: stamp the OTel GenAI agent attributes so any OTLP backend
+    // attributes the whole ask/answer why-trace to this agent (invoke_agent).
+    setAgentAttributes(span)
     setInput(span, props.question)
     const answer = await runAsk(props)
     setOutput(span, answer.answer)

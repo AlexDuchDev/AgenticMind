@@ -42,7 +42,44 @@ export const Attr = {
   LLM_TOKEN_PROMPT: "llm.token_count.prompt",
   LLM_TOKEN_COMPLETION: "llm.token_count.completion",
   LLM_TOKEN_TOTAL: "llm.token_count.total",
+  // OTel GenAI semantic conventions (vendor-neutral): agent attribution on the
+  // root span, so any OTLP backend (Phoenix / Langfuse / AgenticPerformance)
+  // attributes the why-trace to this agent. String literals, not the semconv
+  // package, to avoid a new dependency.
+  GEN_AI_OPERATION_NAME: "gen_ai.operation.name",
+  GEN_AI_AGENT_ID: "gen_ai.agent.id",
+  GEN_AI_AGENT_NAME: "gen_ai.agent.name",
 } as const
+
+/** OTel GenAI operation value for an agent invocation (the root span's op). */
+export const GEN_AI_INVOKE_AGENT = "invoke_agent"
+/** This engine's agent name, stamped on the root agent span. */
+export const AGENT_NAME = "AgenticMind"
+
+/**
+ * Resolves this agent's id for GenAI attribution from the deployment env,
+ * OTEL_SERVICE_NAME → AGENT_ID → "agenticmind". Read at span time so the value
+ * tracks the process the trace is emitted from.
+ */
+export const resolveAgentId = (): string =>
+  // oxlint-disable-next-line node/no-process-env
+  process.env.OTEL_SERVICE_NAME ?? process.env.AGENT_ID ?? "agenticmind"
+
+/**
+ * Stamps the OTel GenAI agent attributes (operation = invoke_agent, agent
+ * id/name) on the given span, so any OTLP backend attributes the trace to this
+ * agent. A no-op unless the span is recording (i.e. an exporter is registered),
+ * so it is safe to call unconditionally on the hot path. Attaches to the root
+ * span only — nothing sets gen_ai.operation.name upstream, so the set is direct.
+ */
+export const setAgentAttributes = (span: Span): void => {
+  if (!span.isRecording()) {
+    return
+  }
+  span.setAttribute(Attr.GEN_AI_OPERATION_NAME, GEN_AI_INVOKE_AGENT)
+  span.setAttribute(Attr.GEN_AI_AGENT_ID, resolveAgentId())
+  span.setAttribute(Attr.GEN_AI_AGENT_NAME, AGENT_NAME)
+}
 
 /** Truncate attribute values so a span never carries an unbounded payload. */
 const cap = (s: string, max = 2000): string => (s.length <= max ? s : `${s.slice(0, max)}…`)
