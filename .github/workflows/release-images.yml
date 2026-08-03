@@ -6,10 +6,18 @@ name: release-images
 # (Graviton/Ampere) without a --platform flag:
 #   ghcr.io/moai-team-llc/agenticmind-server:<version>   (and :latest)
 #   ghcr.io/moai-team-llc/agenticmind-worker:<version>
-# Fires on each published GitHub Release; also runnable on demand.
+# Fires on each version tag push; also runnable on demand.
+#
+# Deliberately NOT `release: [published]`. release.yml cuts the GitHub Release
+# with GITHUB_TOKEN, and GitHub does not raise workflow-triggering events for
+# anything GITHUB_TOKEN does — so that release never reached this file. v0.12.0
+# and v0.13.0 shipped with no images at all, and `latest` sat on 0.11.0 for
+# eight weeks. Earlier tags only built because a human happened to re-publish
+# the release by hand minutes later. The tag push is the honest trigger: it is
+# the same event release.yml already keys on, and it needs no token at all.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
 
 permissions:
@@ -51,7 +59,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.event_name == 'release' && github.event.release.prerelease == false }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Build & push
