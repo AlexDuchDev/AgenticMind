@@ -6,6 +6,79 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-03
+
+The **evidence** release: what an agent did stops being a log line and becomes a
+durable, queryable record — and where a decision needs a human, the loop now
+suspends on that record instead of hoping the process stays alive. Ships the
+assurance evidence plane (`POST /hooks/audit`), the durable human-in-the-loop
+engine (12-factor F7 / STANDARD Layer 5), the §4 skill compiler behind two
+decorrelated gates, and the verify-judge decorrelation the §1 audit demanded.
+
+Upgrading from 0.11.x: migrations `0009`–`0017` apply in one pass. `0009` drops
+the `kg_*` graph tables and `0011` re-creates them with tenant-isolation RLS —
+graph rows do NOT survive that round trip, so re-ingest if you had
+`KNOWLEDGE_GRAPHRAG_ENABLED` on. Everything from `0012` up is additive. No new
+required environment variables.
+
+### Added
+
+- **Assurance evidence plane + `POST /hooks/audit`.** Tool calls arrive over an
+  authenticated ingestion endpoint (body size capped — an unbounded body was a
+  memory-exhaustion vector) and land in `tool_audit_events` via the evidence
+  collector, so "which tool touched what, under whose authority" is a query
+  rather than a grep. Includes the **L3 judge-gated remediation ladder**,
+  hardened against five adversarial-review findings before merge.
+- **Durable human-in-the-loop engine (12-factor F7).** A HITL request is modeled
+  as a tool call the agent emits, suspending the loop on the durable substrate:
+  it survives both a long human wait and a killed process. Three tiers — the
+  request engine, the internal resume worker with a remediation gate, and the L3
+  producer that **auto-proposes** remediations from assurance drift for a human
+  to **approve**. Un-dormanting the remediation path never means acting without
+  a person.
+- **§4 skill compiler — `kl_compile_skill` MCP tool.** Compiles a corpus slice
+  into a SKILL.md behind gates that fail closed: **L1** structural, **L2**
+  faithfulness (every directive entailed by its own cited snippet — the skill is
+  a projection of the corpus, nothing invented), and a **completeness reviewer**
+  as a second, decorrelated judge covering what faithfulness structurally cannot
+  see: a critical "never do X" that *is* in the corpus and never reached the
+  skill. `corpusSnapshotId` is a deterministic content hash, so a recompile is
+  reproducible without a snapshot store.
+- **Eval-science AIUC-1 controls** in the AAL control catalog (calibrated
+  verification + ground-truth provenance, Standard v3.1 Part V), and a
+  **retrieval-ranking evaluation** with Recall@k / MRR and a gate.
+
+### Changed
+
+- **The verify judges no longer share a model family with the generator.** Two
+  same-family passes are one opinion twice; the §1 audit called this the
+  knowledge engine's CRITICAL finding. Judges now run decorrelated and at a
+  pinned temperature — a non-deterministic judge cannot be calibrated — and the
+  path **fails loud** rather than silently co-signing when decorrelation is not
+  actually configured.
+- **AgenticGateway is documented as the paved-road chat endpoint** (budgets,
+  measured routing, cache, evidence) when composing the AgenticProduct stack.
+  Comments only: `CHAT_BASE_URL`/`CHAT_API_KEY` keep working exactly as before.
+- AgenticSelfHealingCode removed from the documented ecosystem family.
+
+### Fixed
+
+- **Images are built on the tag push, not on the GitHub Release.** `release.yml`
+  cuts the Release with `GITHUB_TOKEN`, and GitHub raises no workflow-triggering
+  events for `GITHUB_TOKEN` actions — so `release: published` never reached
+  `release-images.yml`. **v0.12.0 and v0.13.0 have no images in GHCR at all**,
+  and `latest` sat on 0.11.0 for eight weeks. Earlier tags only built because a
+  human happened to re-publish the release by hand minutes later. Keying on the
+  tag push takes the token out of the causal chain. Self-hosters on `:latest`
+  move from 0.11.0 straight to 0.14.0 — read the migration note above first.
+- **The `no-unsafe-*` lint family is back on for production code**, with a test
+  that fails if it is ever silently disabled again. That family is the net for
+  an `any` — from a raw SQL row, parsed LLM JSON, or a cast — propagating into
+  typed code, which is precisely the hole `strict` tsc leaves open by design.
+- Defensive JSON parsing for non-OpenAI verify judges, and a wider output-leak
+  window that was producing false refusals.
+- Worktree-safe `commit-msg` hook.
+
 ## [0.13.0] — 2026-07-04
 
 The **correction** release: v0.12.0's BREAKING GraphRAG removal was a
