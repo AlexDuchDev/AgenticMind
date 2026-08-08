@@ -41,7 +41,7 @@ jobs:
       DATABASE_URL: postgres://postgres:mysecretpassword@localhost:5432/agenticmind
       SKIP_VALIDATION: "true"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Gate on CHAT_API_KEY secret
         id: gate
